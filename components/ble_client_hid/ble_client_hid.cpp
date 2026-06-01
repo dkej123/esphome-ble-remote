@@ -35,6 +35,7 @@ void BLEClientHID::dump_config() {
   ESP_LOGCONFIG(TAG, "BLE Client HID:");
   ESP_LOGCONFIG(TAG, "  MAC address        : %s",
                 this->parent()->address_str());
+  ESP_LOGCONFIG(TAG, "  Build              : null-safe patch (attixray fork)");
 }
 
 void BLEClientHID::gap_event_handler(esp_gap_ble_cb_event_t event,
@@ -310,13 +311,14 @@ uint8_t *BLEClientHID::parse_characteristic_data(
     ESP_LOGD(TAG, "No characteristic with uuid %#X found on device", uuid);
     return nullptr;
   }
-  if (handles_to_read.count(characteristic->handle) >= 1) {
+  auto it = handles_to_read.find(characteristic->handle);
+  if (it != handles_to_read.end() && it->second != nullptr) {
     ESP_LOGD(
         TAG,
         "Characteristic parsed for uuid %#X and handle %#X starts with %#X",
         uuid, characteristic->handle,
-        *(handles_to_read[characteristic->handle]->value_));
-    return handles_to_read[characteristic->handle]->value_;
+        *(it->second->value_));
+    return it->second->value_;
   }
   ESP_LOGD(TAG,
            "Characteristic with uuid %#X and handle %#X not stored in "
@@ -365,12 +367,23 @@ void BLEClientHID::configure_hid_client() {
   if (device_info_service != nullptr) {
     BLECharacteristic *pnp_id_char =
         device_info_service->get_characteristic(ESP_GATT_UUID_PNP_ID);
-    uint8_t *rdata = this->handles_to_read[pnp_id_char->handle]->value_;
-    this->vendor_id = *((uint16_t *)&rdata[1]);
-    this->product_id = *((uint16_t *)&rdata[3]);
-    this->version = *((uint16_t *)&rdata[5]);
-    delete this->handles_to_read[pnp_id_char->handle];
-    this->handles_to_read.erase(pnp_id_char->handle);
+    GATTReadData *pnp_data = nullptr;
+    if (pnp_id_char != nullptr) {
+      auto pnp_it = this->handles_to_read.find(pnp_id_char->handle);
+      if (pnp_it != this->handles_to_read.end())
+        pnp_data = pnp_it->second;
+    }
+    if (pnp_data != nullptr && pnp_data->value_len_ >= 7) {
+      uint8_t *rdata = pnp_data->value_;
+      this->vendor_id = *((uint16_t *)&rdata[1]);
+      this->product_id = *((uint16_t *)&rdata[3]);
+      this->version = *((uint16_t *)&rdata[5]);
+      delete this->handles_to_read[pnp_id_char->handle];
+      this->handles_to_read.erase(pnp_id_char->handle);
+    } else {
+      ESP_LOGW(TAG,
+               "PnP ID not available - skipping vendor/product/version info");
+    }
 
     uint8_t *t_manufacturer = this->parse_characteristic_data(
         device_info_service, ESP_GATT_UUID_MANU_NAME);
@@ -391,13 +404,26 @@ void BLEClientHID::configure_hid_client() {
   if (hid_service != nullptr) {
     BLECharacteristic *hid_report_map_char =
         hid_service->get_characteristic(ESP_GATT_UUID_HID_REPORT_MAP);
+    GATTReadData *report_map_data = nullptr;
+    if (hid_report_map_char != nullptr) {
+      auto rm_it = this->handles_to_read.find(hid_report_map_char->handle);
+      if (rm_it != this->handles_to_read.end())
+        report_map_data = rm_it->second;
+    }
+    if (report_map_data == nullptr) {
+      ESP_LOGW(TAG,
+               "HID Report Map characteristic not available - cannot configure "
+               "HID client, aborting (no crash)");
+      for (auto &kv : this->handles_to_read)
+        delete kv.second;
+      this->handles_to_read.clear();
+      return;
+    }
     ESP_LOGD(TAG, "Parse HID Report Map");
-    HIDReportMap::esp_logd_report_map(
-        this->handles_to_read[hid_report_map_char->handle]->value_,
-        this->handles_to_read[hid_report_map_char->handle]->value_len_);
+    HIDReportMap::esp_logd_report_map(report_map_data->value_,
+                                      report_map_data->value_len_);
     this->hid_report_map = HIDReportMap::parse_report_map_data(
-        this->handles_to_read[hid_report_map_char->handle]->value_,
-        this->handles_to_read[hid_report_map_char->handle]->value_len_);
+        report_map_data->value_, report_map_data->value_len_);
     ESP_LOGD(TAG, "Parse HID Report Map Done");
     std::vector<BLECharacteristic *> chars = hid_service->characteristics;
     for (BLECharacteristic *hid_char : chars) {
@@ -417,11 +443,19 @@ void BLEClientHID::configure_hid_client() {
         BLEDescriptor *rpt_ref_desc =
             hid_char->get_descriptor(ESP_GATT_UUID_RPT_REF_DESCR);
         if (rpt_ref_desc != nullptr) {
-          handle_report_id.insert(std::make_pair(
-              hid_char->handle,
-              this->handles_to_read[rpt_ref_desc->handle]->value_[0]));
-          ESP_LOGD(TAG, "Report ID for handle %d is %d", hid_char->handle,
-                   this->handles_to_read[rpt_ref_desc->handle]->value_[0]);
+          auto rref_it = this->handles_to_read.find(rpt_ref_desc->handle);
+          if (rref_it != this->handles_to_read.end() &&
+              rref_it->second != nullptr && rref_it->second->value_len_ >= 1) {
+            handle_report_id.insert(std::make_pair(
+                hid_char->handle, rref_it->second->value_[0]));
+            ESP_LOGD(TAG, "Report ID for handle %d is %d", hid_char->handle,
+                     rref_it->second->value_[0]);
+          } else {
+            ESP_LOGW(TAG,
+                     "Report Reference descriptor for handle %d not read - "
+                     "skipping report id mapping",
+                     hid_char->handle);
+          }
         }
       }
     }
