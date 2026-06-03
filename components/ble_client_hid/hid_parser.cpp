@@ -44,6 +44,16 @@ namespace esphome
         uint8_t report_item_info = report_map_data[0];
         report_map_size--;
         report_map_data++;
+        uint8_t dbg_data_size;
+        switch (report_item_info & HID_ITEM_SIZE_MASK)
+        {
+        case HID_ITEM_SIZE_32: dbg_data_size = 4; break;
+        case HID_ITEM_SIZE_16: dbg_data_size = 2; break;
+        case HID_ITEM_SIZE_8:  dbg_data_size = 1; break;
+        default:               dbg_data_size = 0; break;
+        }
+        if (report_map_size < dbg_data_size)
+          break;  // truncated/padded report map - stop before over-reading
         switch (report_item_info & HID_ITEM_SIZE_MASK)
         {
         case HID_ITEM_SIZE_32:
@@ -149,6 +159,26 @@ namespace esphome
 
         report_map_data++;
         report_map_size--;
+
+        // Bail out if the item claims more data bytes than remain in the
+        // buffer. ESP-IDF 5.x can hand back a truncated/padded HID report map;
+        // without this guard report_map_size (uint16_t) underflows, the loop
+        // over-reads the heap and later throws (bad_alloc / .at out_of_range),
+        // which - with -fno-exceptions - calls abort().
+        uint8_t item_data_size;
+        switch (report_item_info & HID_ITEM_SIZE_MASK)
+        {
+        case HID_ITEM_SIZE_32: item_data_size = 4; break;
+        case HID_ITEM_SIZE_16: item_data_size = 2; break;
+        case HID_ITEM_SIZE_8:  item_data_size = 1; break;
+        default:               item_data_size = 0; break;
+        }
+        if (report_map_size < item_data_size)
+        {
+          ESP_LOGW(TAG, "HID report map truncated (need %u data bytes, %u left) - stopping parse",
+                   item_data_size, report_map_size);
+          break;
+        }
 
         uint32_t report_item_data = HIDReportMap::parse_item(&report_map_data, &report_map_size, report_item_info);
         switch (report_item_info & (HID_ITEM_TYPE_MASK | HID_ITEM_TAG_MASK))
@@ -271,7 +301,19 @@ namespace esphome
             }
           }
 
-          HIDInputReport *input_report = input_reports.at(state_table.report_id);
+          // Use find()/emplace instead of .at(), which throws (-> abort) when
+          // an INPUT item references a report id that was never declared.
+          auto ir_it = input_reports.find(state_table.report_id);
+          if (ir_it == input_reports.end())
+          {
+            ESP_LOGW(TAG, "INPUT item for undeclared report id %d - creating it",
+                     state_table.report_id);
+            ir_it = input_reports
+                        .emplace(state_table.report_id,
+                                 new HIDInputReport(state_table.report_id))
+                        .first;
+          }
+          HIDInputReport *input_report = ir_it->second;
           if (item_flags & HID_IOF_CONSTANT)
           {
             ESP_LOGD(TAG, "Parsed input report item of type: constant");
@@ -350,7 +392,13 @@ namespace esphome
         ESP_LOGD(TAG, "Parsing HID report with report ID (%d)", hid_report_data[0]);
         uint8_t report_id = hid_report_data[0];
         hid_report_data++;
-        return this->input_reports.at(report_id)->parse(hid_report_data);
+        auto it = this->input_reports.find(report_id);
+        if (it == this->input_reports.end())
+        {
+          ESP_LOGW(TAG, "No input report for report id %d", report_id);
+          return std::vector<HIDReportItemValue>();
+        }
+        return it->second->parse(hid_report_data);
       }
       ESP_LOGD(TAG, "Parsing HID report without report ID");
       return this->input_reports.at(0)->parse(hid_report_data);

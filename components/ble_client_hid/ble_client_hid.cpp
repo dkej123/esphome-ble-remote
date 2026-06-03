@@ -35,7 +35,7 @@ void BLEClientHID::dump_config() {
   ESP_LOGCONFIG(TAG, "BLE Client HID:");
   ESP_LOGCONFIG(TAG, "  MAC address        : %s",
                 this->parent()->address_str());
-  ESP_LOGCONFIG(TAG, "  Build              : null-safe patch (attixray fork)");
+  ESP_LOGCONFIG(TAG, "  Build              : null-safe + parser-bounds patch (attixray)");
 }
 
 void BLEClientHID::gap_event_handler(esp_gap_ble_cb_event_t event,
