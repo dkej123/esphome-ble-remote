@@ -35,7 +35,7 @@ void BLEClientHID::dump_config() {
   ESP_LOGCONFIG(TAG, "BLE Client HID:");
   ESP_LOGCONFIG(TAG, "  MAC address        : %s",
                 this->parent()->address_str());
-  ESP_LOGCONFIG(TAG, "  Build              : null-safe + parser-bounds patch (attixray)");
+  ESP_LOGCONFIG(TAG, "  Build              : lazy-usage-init + parser/null patch (attixray)");
 }
 
 void BLEClientHID::gap_event_handler(esp_gap_ble_cb_event_t event,
@@ -239,9 +239,10 @@ void BLEClientHID::send_input_report_event(esp_ble_gattc_cb_param_t *p_data) {
   }
   for (HIDReportItemValue value : hid_report_values) {
     std::string usage;
-    if (USAGE_PAGES.count(value.usage.page) > 0 &&
-        USAGE_PAGES.at(value.usage.page).usages_.count(value.usage.usage) > 0) {
-      usage = USAGE_PAGES.at(value.usage.page).usages_.at(value.usage.usage);
+    const auto &usage_pages = get_usage_pages();
+    if (usage_pages.count(value.usage.page) > 0 &&
+        usage_pages.at(value.usage.page).usages_.count(value.usage.usage) > 0) {
+      usage = usage_pages.at(value.usage.page).usages_.at(value.usage.usage);
     } else {
       usage = std::to_string(value.usage.page) + "_" +
               std::to_string(value.usage.usage);
