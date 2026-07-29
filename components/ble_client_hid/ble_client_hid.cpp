@@ -20,14 +20,18 @@ void BLEClientHID::loop() {
                                             // hid_state = HIDState::READ_CHARS
       this->hid_state = HIDState::READING_CHARS;
       break;
-    case HIDState::READ_CHARS:
-      this->configure_hid_client();
-      this->hid_state = HIDState::NOTIFICATIONS_REGISTERING;
-    case HIDState::NOTIFICATIONS_REGISTERED:
-      esp_ble_gap_update_conn_params(&this->preferred_conn_params);
-      this->hid_state = HIDState::CONN_PARAMS_UPDATING;
-    default:
-      break;
+case HIDState::READ_CHARS:
+  this->configure_hid_client();
+  this->hid_state = HIDState::NOTIFICATIONS_REGISTERING;
+  break;
+
+case HIDState::NOTIFICATIONS_REGISTERED:
+  esp_ble_gap_update_conn_params(&this->preferred_conn_params);
+  this->hid_state = HIDState::CONN_PARAMS_UPDATING;
+  break;
+
+default:
+  break;
   }
 }
 
@@ -44,7 +48,7 @@ void BLEClientHID::gap_event_handler(esp_gap_ble_cb_event_t event,
    {
    case ESP_GAP_BLE_UPDATE_CONN_PARAMS_EVT:
     ESP_LOGI(TAG, "Updated conn params to interval=%.2f ms, latency=%u, timeout=%.1f ms", param->update_conn_params.conn_int * 1.25f, param->update_conn_params.latency, param->update_conn_params.timeout * 10.f);
-    this->hid_state = HIDState::CONFIGURED;
+    this->hid_state = HIDState::HID_CONFIGURED;
     this->node_state = espbt::ClientState::ESTABLISHED;
     /* code */
      break;
