@@ -1,5 +1,7 @@
 #include <stack>
 #include <map>
+#include <cstdarg>
+#include <cstdio>
 #include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
 
@@ -12,6 +14,15 @@ namespace esphome
   {
 
     static const char *const TAG = "hid_parser";
+
+    static void delete_input_reports(std::map<uint8_t, HIDInputReport *> *reports)
+    {
+      for (auto &entry : *reports)
+      {
+        delete entry.second;
+      }
+      reports->clear();
+    }
 
     // requires at least C++11
     const std::string vformat(const char *const zcFormat, ...)
@@ -136,7 +147,7 @@ namespace esphome
     const HIDUsage HIDUsageList::get_usage(uint16_t index) const
     {
       ESP_LOGD(TAG, "get usage for index %d with list size %d", index, this->usages.size());
-      if (index > this->usages.size())
+      if (index >= this->usages.size())
       {
         ESP_LOGW(TAG, "Usage index out of range");
         return HIDUsage(index,0);;
@@ -196,6 +207,7 @@ namespace esphome
             ESP_LOGW(TAG,
                      "No parser state in HID parser states stack, error in HID "
                      "report map");
+            delete_input_reports(&input_reports);
             return nullptr;
           }
           state_table = parser_states.top();
@@ -314,10 +326,18 @@ namespace esphome
                         .first;
           }
           HIDInputReport *input_report = ir_it->second;
+          if (state_table.report_size == 0 || state_table.report_size > 32 ||
+              state_table.report_count == 0 || state_table.report_count > 255 ||
+              state_table.report_size * state_table.report_count > 65535)
+          {
+            ESP_LOGW(TAG, "Invalid report item size/count (%u/%u) - skipping",
+                     state_table.report_size, state_table.report_count);
+            break;
+          }
           if (item_flags & HID_IOF_CONSTANT)
           {
             ESP_LOGD(TAG, "Parsed input report item of type: constant");
-            input_report->add_padding(state_table.report_size);
+            input_report->add_padding(state_table.report_size * state_table.report_count);
             break;
           }
           HIDUsageCollection *usage_collection;
@@ -364,12 +384,12 @@ namespace esphome
       return report_map;
     }
 
-    uint8_t HIDInputReport::get_next_offset()
+    uint16_t HIDInputReport::get_next_offset()
     {
       return this->report_size;
     }
 
-    void HIDInputReport::add_padding(uint8_t padding_size)
+    void HIDInputReport::add_padding(uint16_t padding_size)
     {
       this->report_size += padding_size;
     }
@@ -380,9 +400,10 @@ namespace esphome
       this->report_size += item->get_total_size();
     }
 
-    std::vector<HIDReportItemValue> HIDReportMap::parse(uint8_t *hid_report_data)
+    std::vector<HIDReportItemValue> HIDReportMap::parse(
+        const uint8_t *hid_report_data, size_t report_size_bytes)
     {
-      if (this->input_reports.empty())
+      if (hid_report_data == nullptr || report_size_bytes == 0 || this->input_reports.empty())
       {
         ESP_LOGW(TAG, "No input reports found");
         return std::vector<HIDReportItemValue>();
@@ -392,24 +413,29 @@ namespace esphome
         ESP_LOGD(TAG, "Parsing HID report with report ID (%d)", hid_report_data[0]);
         uint8_t report_id = hid_report_data[0];
         hid_report_data++;
+        report_size_bytes--;
         auto it = this->input_reports.find(report_id);
         if (it == this->input_reports.end())
         {
           ESP_LOGW(TAG, "No input report for report id %d", report_id);
           return std::vector<HIDReportItemValue>();
         }
-        return it->second->parse(hid_report_data);
+        return it->second->parse(hid_report_data, report_size_bytes);
       }
       ESP_LOGD(TAG, "Parsing HID report without report ID");
-      return this->input_reports.at(0)->parse(hid_report_data);
+      auto it = this->input_reports.find(0);
+      return it == this->input_reports.end()
+                 ? std::vector<HIDReportItemValue>()
+                 : it->second->parse(hid_report_data, report_size_bytes);
     }
 
-    std::vector<HIDReportItemValue> HIDInputReport::parse(uint8_t *report_data)
+    std::vector<HIDReportItemValue> HIDInputReport::parse(
+        const uint8_t *report_data, size_t report_size_bytes)
     {
       std::vector<HIDReportItemValue> report_values;
       for (HIDInputReportItem *report_item : this->items)
       {
-        std::vector<HIDReportItemValue> item_values = report_item->parse(report_data);
+        std::vector<HIDReportItemValue> item_values = report_item->parse(report_data, report_size_bytes);
         for (HIDReportItemValue item_value : item_values)
         {
           report_values.push_back(item_value);
@@ -423,8 +449,15 @@ namespace esphome
       return this->report_size * this->report_count;
     }
 
-    int32_t HIDInputReportItem::parse_input_report_item(uint8_t *report_data, uint16_t bit_offset, uint16_t report_size, HIDLogicalRange logical_range)
+    bool HIDInputReportItem::parse_input_report_item(
+        const uint8_t *report_data, size_t report_size_bytes, uint16_t bit_offset,
+        uint16_t report_size, HIDLogicalRange logical_range, int32_t *result)
     {
+      if (report_data == nullptr || result == nullptr || report_size == 0 ||
+          report_size > 32 || static_cast<size_t>(bit_offset) + report_size > report_size_bytes * 8)
+      {
+        return false;
+      }
       int32_t value = 0;
       uint16_t data_bits_remaining = report_size;
       uint16_t current_bit = bit_offset;
@@ -447,7 +480,8 @@ namespace esphome
         bit_mask <<= 1;
         current_bit++;
       }
-      return value;
+      *result = value;
+      return true;
     }
 
     std::string HIDReportItemValue::to_string() const
@@ -455,12 +489,20 @@ namespace esphome
       return vformat("HIDReportItemValue(usage_page: %d, usage: %d, value: %d)",this->usage.page, this->usage.usage, this->value);
     }
 
-    std::vector<HIDReportItemValue> HIDInputReportVariable::parse(uint8_t *report_data)
+    std::vector<HIDReportItemValue> HIDInputReportVariable::parse(
+        const uint8_t *report_data, size_t report_size_bytes)
     {
       std::vector<HIDReportItemValue> values;
       for (uint8_t i = 0; i < this->report_count; i++)
       {
-        int32_t value = parse_input_report_item(report_data, this->report_offset + i * this->report_size, this->report_size, this->logical_range);
+        int32_t value = 0;
+        if (!parse_input_report_item(report_data, report_size_bytes,
+                                     this->report_offset + i * this->report_size,
+                                     this->report_size, this->logical_range, &value))
+        {
+          ESP_LOGW(TAG, "HID input report is shorter than its descriptor");
+          break;
+        }
         if (value > this->logical_range.maximum || value < this->logical_range.minimum)
         {
           ESP_LOGD(TAG, "Value out of range");
@@ -476,13 +518,21 @@ namespace esphome
       return values;
     }
 
-    std::vector<HIDReportItemValue> HIDInputReportArray::parse(uint8_t *report_data)
+    std::vector<HIDReportItemValue> HIDInputReportArray::parse(
+        const uint8_t *report_data, size_t report_size_bytes)
     {
       std::vector<HIDReportItemValue> values = {};
 
       for (uint8_t i = 0; i < this->report_count; i++)
       {
-        int32_t value = parse_input_report_item(report_data, this->report_offset + i * this->report_size, this->report_size, this->logical_range);
+        int32_t value = 0;
+        if (!parse_input_report_item(report_data, report_size_bytes,
+                                     this->report_offset + i * this->report_size,
+                                     this->report_size, this->logical_range, &value))
+        {
+          ESP_LOGW(TAG, "HID input report is shorter than its descriptor");
+          break;
+        }
         if (value > this->logical_range.maximum || value < this->logical_range.minimum)
         {
           ESP_LOGD(TAG, "Value out of range");

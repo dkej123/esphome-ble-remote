@@ -77,6 +77,8 @@ class BLEClientHID : public Component,
 #endif
 
  public:
+  ~BLEClientHID() override;
+
   void loop() override;
 
   void gattc_event_handler(
@@ -123,7 +125,14 @@ class BLEClientHID : public Component,
       ble_client::BLEService *service,
       uint16_t uuid);
 
-  HIDReportMap *hid_report_map;
+  GATTReadData *get_characteristic_data_(
+      ble_client::BLEService *service,
+      uint16_t uuid);
+  void reset_runtime_state_();
+  void clear_gatt_reads_();
+  void complete_reads_if_ready_();
+
+  HIDReportMap *hid_report_map = nullptr;
 
   std::vector<ble_client::BLECharacteristic *> characteristics;
   std::vector<uint16_t> handles_registered_for_notify;
@@ -138,10 +147,10 @@ class BLEClientHID : public Component,
 
   HIDState hid_state = HIDState::INIT;
 
-  uint16_t battery_handle;
-  uint16_t vendor_id;
-  uint16_t product_id;
-  uint16_t version;
+  uint16_t battery_handle = 0;
+  uint16_t vendor_id = 0;
+  uint16_t product_id = 0;
+  uint16_t version = 0;
 
   std::string device_name;
   std::string manufacturer;

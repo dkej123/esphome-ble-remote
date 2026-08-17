@@ -1,5 +1,11 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
+#include <map>
+#include <string>
+#include <vector>
+
 namespace esphome
 {
   namespace ble_client_hid
@@ -36,9 +42,9 @@ namespace esphome
 
     struct HIDStateTable
     {
-      uint8_t report_size = 0; // in bits
+      uint32_t report_size = 0; // in bits
       HIDLogicalRange logical_range = {};
-      uint8_t report_count = 0;
+      uint32_t report_count = 0;
       uint8_t report_id = 0;
       uint16_t usage_page = 0;
     };
@@ -77,7 +83,7 @@ namespace esphome
     {
     public:
       HIDInputReportItem(HIDUsageCollection *usage_collection, uint8_t report_count, uint8_t report_id,
-                         HIDLogicalRange logical_range, uint8_t report_size, uint8_t report_offset)
+                         HIDLogicalRange logical_range, uint8_t report_size, uint16_t report_offset)
           : report_size(report_size),
             usage_collection(usage_collection),
             report_count(report_count),
@@ -92,8 +98,10 @@ namespace esphome
         delete usage_collection;
       };
       size_t get_total_size();
-      virtual std::vector<HIDReportItemValue> parse(uint8_t *hid_report_data) = 0;
-      static int32_t parse_input_report_item(uint8_t *report_data, uint16_t bit_offset, uint16_t report_size, HIDLogicalRange logical_range);
+      virtual std::vector<HIDReportItemValue> parse(const uint8_t *hid_report_data, size_t report_size_bytes) = 0;
+      static bool parse_input_report_item(const uint8_t *report_data, size_t report_size_bytes,
+                                          uint16_t bit_offset, uint16_t report_size,
+                                          HIDLogicalRange logical_range, int32_t *value);
       const uint8_t report_size; // in bits
 
     protected:
@@ -101,7 +109,7 @@ namespace esphome
       const uint8_t report_count;
       const uint8_t report_id;
       const HIDLogicalRange logical_range;
-      const uint8_t report_offset; // in bits
+      const uint16_t report_offset; // in bits
       std::vector<HIDReportItemValue> last_values;
     };
 
@@ -110,7 +118,7 @@ namespace esphome
     public:
       using HIDInputReportItem::HIDInputReportItem;
       ~HIDInputReportArray(){};
-      std::vector<HIDReportItemValue> parse(uint8_t *hid_report_data);
+      std::vector<HIDReportItemValue> parse(const uint8_t *hid_report_data, size_t report_size_bytes) override;
 
     protected:
     };
@@ -120,7 +128,7 @@ namespace esphome
     public:
      using HIDInputReportItem::HIDInputReportItem;
       ~HIDInputReportVariable(){};
-      std::vector<HIDReportItemValue> parse(uint8_t *hid_report_datsa);
+      std::vector<HIDReportItemValue> parse(const uint8_t *hid_report_data, size_t report_size_bytes) override;
     };
 
     class HIDInputReport
@@ -135,14 +143,14 @@ namespace esphome
         }
       };
       void push_back(HIDInputReportItem *item);
-      void add_padding(uint8_t padding_size);
-      uint8_t get_next_offset();
-      std::vector<HIDReportItemValue> parse(uint8_t *hid_report_data);
+      void add_padding(uint16_t padding_size);
+      uint16_t get_next_offset();
+      std::vector<HIDReportItemValue> parse(const uint8_t *hid_report_data, size_t report_size_bytes);
 
     protected:
       std::vector<HIDInputReportItem *> items;
       const uint8_t report_id;
-      uint8_t report_size = 0;
+      uint16_t report_size = 0;
     };
 
     class HIDReportMap
@@ -161,7 +169,7 @@ namespace esphome
           const uint8_t *report_map_data, uint16_t report_map_size);
       static void esp_logd_report_map(const uint8_t *report_map_data, uint16_t report_map_size);
       static int32_t parse_item(const uint8_t **report_map_data, uint16_t *report_map_size, uint8_t report_item_info);
-      std::vector<HIDReportItemValue> parse(uint8_t *hid_report_data);
+      std::vector<HIDReportItemValue> parse(const uint8_t *hid_report_data, size_t report_size_bytes);
 
     protected:
       const std::map<uint8_t, HIDInputReport *> input_reports;
