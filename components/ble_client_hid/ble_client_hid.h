@@ -77,7 +77,7 @@ class BLEClientHID : public Component,
 #endif
 
  public:
-  ~BLEClientHID() override;
+  ~BLEClientHID();
 
   void loop() override;
 
